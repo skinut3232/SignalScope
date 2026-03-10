@@ -7,6 +7,7 @@
     instance of this class when you load the plugin. It handles:
     - Receiving audio from the DAW (processBlock)
     - Storing recent samples in a circular buffer for the UI to read
+    - Trigger detection to lock the waveform display
     - Reporting what audio formats are supported (stereo, mono, etc.)
     - Saving/loading plugin state
 
@@ -19,6 +20,19 @@
 #include <JuceHeader.h>
 #include <atomic>
 #include <vector>
+
+// ── Trigger Mode ───────────────────────────────────────────────────────
+// Determines how the oscilloscope finds a consistent "start point" for
+// each frame of display.
+//   Rising  = start where the signal crosses the threshold going UP
+//   Falling = start where the signal crosses the threshold going DOWN
+//   None    = no trigger, just show the most recent samples (free-running)
+enum class TriggerMode
+{
+    Rising,
+    Falling,
+    None
+};
 
 class SignalScopeAudioProcessor : public juce::AudioProcessor
 {
@@ -50,32 +64,31 @@ public:
     void setStateInformation (const void* data, int sizeInBytes) override;
 
     // ── Circular Buffer (Phase 2) ──────────────────────────────────────
-    //
-    // The circular buffer is how audio data gets from the audio thread to
-    // the UI thread. The audio thread writes samples here in processBlock(),
-    // and the UI thread reads them in paint().
-    //
-    // We store 2 channels (left + right) in separate buffers so the UI can
-    // choose which to display. Buffer size is 8192 samples, which at 44.1kHz
-    // gives us ~186ms of audio history — more than enough for any oscilloscope
-    // time window we'd want to show.
 
     static constexpr int kCircularBufferSize = 8192;
 
-    // The buffers themselves. Written by the audio thread, read by the UI thread.
     std::vector<float> circularBufferL;
     std::vector<float> circularBufferR;
 
-    // The write position — where the audio thread will write the next sample.
-    // std::atomic makes this safe to read from the UI thread without locks.
-    // memory_order_relaxed is fine because we only need the value to be
-    // "approximately correct" — a frame of visual lag is invisible.
     std::atomic<int> writePosition { 0 };
 
-    // Copies the most recent `numSamples` from the circular buffer into `dest`,
-    // in chronological order (oldest first). The UI thread calls this.
+    // Copies display samples into dest buffers. If a trigger is active,
+    // searches for a trigger point and starts the display from there.
+    // Falls back to free-running (most recent samples) if no trigger found.
     void getDisplaySamples (std::vector<float>& destL, std::vector<float>& destR,
                             int numSamples) const;
+
+    // ── Trigger Settings (Phase 3) ─────────────────────────────────────
+    //
+    // These are atomic so the UI thread can change them while the
+    // getDisplaySamples() method reads them — no locks needed.
+
+    // Trigger threshold: the amplitude level the signal must cross.
+    // Default 0.0 = zero crossing, which works well for most signals.
+    std::atomic<float> triggerLevel { 0.0f };
+
+    // Which edge to trigger on (rising, falling, or none/free-running).
+    std::atomic<TriggerMode> triggerMode { TriggerMode::Rising };
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SignalScopeAudioProcessor)

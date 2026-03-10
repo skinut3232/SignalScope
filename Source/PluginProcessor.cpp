@@ -149,28 +149,91 @@ void SignalScopeAudioProcessor::getDisplaySamples (std::vector<float>& destL,
                                                     int numSamples) const
 {
     /*
-        Called by the UI thread to grab the most recent N samples in
-        chronological order (oldest → newest, left to right on screen).
+        Called by the UI thread to grab samples for display.
 
-        The trick: the write position tells us where the NEXT sample will go,
-        so the most recent sample is at (writePos - 1), and the oldest sample
-        we want is at (writePos - numSamples). We use modulo arithmetic to
-        handle the wrap-around.
+        Phase 3 adds TRIGGER DETECTION:
 
-        Example with buffer size 8, writePos = 3, requesting 5 samples:
-          Buffer: [5] [6] [7] [ ] [ ] [ ] [3] [4]
-                        ^writePos
-          We want indices: 6, 7, 0, 1, 2 → samples [3][4][5][6][7]
+        Without a trigger, the display starts at "the most recent N samples",
+        which means the waveform's phase position changes every frame → chaos.
+
+        With a trigger, we search backwards through recent audio history to
+        find a "trigger point" — a place where the signal crosses a threshold
+        in the chosen direction (rising or falling edge). We then start the
+        display from that trigger point, so the waveform appears phase-locked
+        and stable.
+
+        The search works like this (for rising edge, threshold = 0.0):
+          1. Start from the most recent data and look backwards
+          2. Find a sample pair where: previous < 0.0 AND current >= 0.0
+          3. That crossing point becomes the start of our display window
+          4. If no crossing is found, fall back to showing the most recent data
+
+        We search through a "search window" that's larger than the display
+        window. This gives us enough history to find a trigger point even
+        if the signal frequency is low.
     */
 
     destL.resize (numSamples);
     destR.resize (numSamples);
 
     const int pos = writePosition.load (std::memory_order_relaxed);
+    const TriggerMode mode = triggerMode.load (std::memory_order_relaxed);
+    const float threshold = triggerLevel.load (std::memory_order_relaxed);
 
-    // Calculate where the oldest requested sample lives in the circular buffer
-    int readPos = (pos - numSamples + kCircularBufferSize) % kCircularBufferSize;
+    // How far back to search for a trigger point. We search up to half the
+    // buffer, which gives plenty of room to find a crossing while still
+    // leaving enough samples ahead of the trigger to fill the display.
+    const int searchSize = kCircularBufferSize / 2;
 
+    // Default: start reading from (pos - numSamples), i.e. most recent data.
+    // If we find a trigger, we'll override this.
+    int triggerIndex = (pos - numSamples + kCircularBufferSize) % kCircularBufferSize;
+
+    if (mode != TriggerMode::None)
+    {
+        // Search backwards from the most recent data to find a trigger crossing.
+        // We start the search at a point that ensures we have enough samples
+        // AFTER the trigger to fill the display (numSamples worth).
+        //
+        // searchStart = the newest sample we'd consider as a trigger point
+        //             = pos - numSamples (so there are numSamples after it)
+        // searchEnd   = how far back we're willing to look
+        //             = searchStart - searchSize
+
+        bool found = false;
+
+        for (int i = 0; i < searchSize; ++i)
+        {
+            // Current sample index (working backwards from the newest valid trigger point)
+            int idx = (pos - numSamples - i + kCircularBufferSize) % kCircularBufferSize;
+            // Previous sample (one step older)
+            int prevIdx = (idx - 1 + kCircularBufferSize) % kCircularBufferSize;
+
+            float current = circularBufferL[idx];
+            float previous = circularBufferL[prevIdx];
+
+            bool triggered = false;
+
+            if (mode == TriggerMode::Rising)
+                triggered = (previous < threshold) && (current >= threshold);
+            else if (mode == TriggerMode::Falling)
+                triggered = (previous > threshold) && (current <= threshold);
+
+            if (triggered)
+            {
+                triggerIndex = idx;
+                found = true;
+                break;
+            }
+        }
+
+        // If no trigger found, fall through to the default (most recent samples).
+        // This happens during silence or when the signal doesn't cross the threshold.
+        (void) found;
+    }
+
+    // Copy numSamples starting from the trigger point (or fallback position)
+    int readPos = triggerIndex;
     for (int i = 0; i < numSamples; ++i)
     {
         destL[i] = circularBufferL[readPos];
