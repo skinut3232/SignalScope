@@ -17,3 +17,14 @@ Thumbs.db
 
 # Claude Code
 CLAUDE.md
+
+# JUCE / C++ build output (compiled binaries, object files)
+Builds/VisualStudio2022/x64/
+
+# Visual Studio user files
+*.user
+*.suo
+*.ncb
+*.sdf
+*.opensdf
+.vs/
