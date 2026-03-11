@@ -259,14 +259,41 @@ void SignalScopeAudioProcessor::getDisplayMixed (std::vector<float>& dest,
     }
 }
 
-void SignalScopeAudioProcessor::getStateInformation (juce::MemoryBlock& /*destData*/)
+void SignalScopeAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
-    // Phase 3+: save oscilloscope settings (time scale, trigger level, etc.)
+    // Save all user-facing settings so they persist when the DAW project
+    // is saved. We use JUCE's XML format — simple key-value pairs.
+    // The DAW calls this when saving the project and stores the resulting
+    // binary blob alongside the project file.
+
+    auto xml = std::make_unique<juce::XmlElement> ("SignalScopeState");
+
+    xml->setAttribute ("timeScaleMs",  static_cast<double> (timeScaleMs.load()));
+    xml->setAttribute ("triggerLevel", static_cast<double> (triggerLevel.load()));
+    xml->setAttribute ("triggerMode",  static_cast<int> (triggerMode.load()));
+    xml->setAttribute ("channelMode",  static_cast<int> (channelMode.load()));
+    xml->setAttribute ("persistence",  static_cast<double> (persistence.load()));
+    xml->setAttribute ("colorTheme",   colorTheme.load());
+
+    copyXmlToBinary (*xml, destData);
 }
 
-void SignalScopeAudioProcessor::setStateInformation (const void* /*data*/, int /*sizeInBytes*/)
+void SignalScopeAudioProcessor::setStateInformation (const void* data, int sizeInBytes)
 {
-    // Phase 3+: restore oscilloscope settings
+    // Restore settings when the DAW loads a saved project.
+    // The DAW hands us the same binary blob we created in getStateInformation().
+
+    auto xml = getXmlFromBinary (data, sizeInBytes);
+
+    if (xml != nullptr && xml->hasTagName ("SignalScopeState"))
+    {
+        timeScaleMs.store  (static_cast<float> (xml->getDoubleAttribute ("timeScaleMs", 20.0)));
+        triggerLevel.store (static_cast<float> (xml->getDoubleAttribute ("triggerLevel", 0.0)));
+        triggerMode.store  (static_cast<TriggerMode> (xml->getIntAttribute ("triggerMode", 0)));
+        channelMode.store  (static_cast<ChannelMode> (xml->getIntAttribute ("channelMode", 0)));
+        persistence.store  (static_cast<float> (xml->getDoubleAttribute ("persistence", 0.6)));
+        colorTheme.store   (xml->getIntAttribute ("colorTheme", 0));
+    }
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

@@ -72,7 +72,7 @@ SignalScopeAudioProcessorEditor::SignalScopeAudioProcessorEditor (SignalScopeAud
     // ── Time Scale Slider ──────────────────────────────────────────────
     timeScaleSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     timeScaleSlider.setRange (1.0, 100.0, 0.1);
-    timeScaleSlider.setValue (20.0);
+    timeScaleSlider.setValue (processorRef.timeScaleMs.load(), juce::dontSendNotification);
     timeScaleSlider.setSkewFactorFromMidPoint (15.0);
     timeScaleSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 55, 20);
     timeScaleSlider.setTextValueSuffix (" ms");
@@ -102,7 +102,8 @@ SignalScopeAudioProcessorEditor::SignalScopeAudioProcessorEditor (SignalScopeAud
     channelSelect.addItem ("Mid",  3);
     channelSelect.addItem ("Side", 4);
     channelSelect.addItem ("Sum",  5);
-    channelSelect.setSelectedId (1);
+    channelSelect.setSelectedId (static_cast<int> (processorRef.channelMode.load()) + 1,
+                                  juce::dontSendNotification);
 
     channelSelect.onChange = [this]()
     {
@@ -127,7 +128,7 @@ SignalScopeAudioProcessorEditor::SignalScopeAudioProcessorEditor (SignalScopeAud
     // ── Persistence Slider ─────────────────────────────────────────────
     persistenceSlider.setSliderStyle (juce::Slider::LinearHorizontal);
     persistenceSlider.setRange (0.0, 0.95, 0.01);
-    persistenceSlider.setValue (0.6);
+    persistenceSlider.setValue (processorRef.persistence.load(), juce::dontSendNotification);
     persistenceSlider.setTextBoxStyle (juce::Slider::NoTextBox, true, 0, 0);
 
     persistenceSlider.onValueChange = [this]()
@@ -151,7 +152,8 @@ SignalScopeAudioProcessorEditor::SignalScopeAudioProcessorEditor (SignalScopeAud
     colorSelect.addItem ("Green",  1);
     colorSelect.addItem ("Amber",  2);
     colorSelect.addItem ("Blue",   3);
-    colorSelect.setSelectedId (1);
+    colorSelect.setSelectedId (processorRef.colorTheme.load() + 1,
+                               juce::dontSendNotification);
 
     colorSelect.onChange = [this]()
     {
