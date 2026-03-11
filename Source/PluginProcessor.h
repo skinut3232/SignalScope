@@ -34,6 +34,22 @@ enum class TriggerMode
     None
 };
 
+// ── Channel Mode ───────────────────────────────────────────────────────
+// Which signal to display on the oscilloscope.
+//   Left  = left channel only
+//   Right = right channel only
+//   Mid   = (L + R) / 2  — the mono/center content of the stereo image
+//   Side  = (L - R) / 2  — the stereo width content (reverb, panning, etc.)
+//   Sum   = same as Mid  — common name for mono summing
+enum class ChannelMode
+{
+    Left,
+    Right,
+    Mid,
+    Side,
+    Sum
+};
+
 class SignalScopeAudioProcessor : public juce::AudioProcessor
 {
 public:
@@ -90,6 +106,16 @@ public:
     // Which edge to trigger on (rising, falling, or none/free-running).
     std::atomic<TriggerMode> triggerMode { TriggerMode::Rising };
 
+    // ── Channel Select (Phase 3) ─────────────────────────────────────
+
+    // Which channel(s) to display. The UI sets this via a combo box.
+    std::atomic<ChannelMode> channelMode { ChannelMode::Left };
+
+    // Returns the mixed display samples for the current channel mode.
+    // This applies the L/R/Mid/Side/Sum math and writes the result
+    // into a single output buffer.
+    void getDisplayMixed (std::vector<float>& dest, int numSamples) const;
+
     // ── Time Scale (Phase 3) ───────────────────────────────────────────
 
     // How many milliseconds of audio to show on screen.
@@ -101,6 +127,9 @@ public:
     // the time scale (milliseconds) into a sample count.
     // Default 44100 is a safe fallback if prepareToPlay hasn't been called yet.
     std::atomic<double> currentSampleRate { 44100.0 };
+
+    // Returns the sample at bufferIndex mixed according to the channel mode.
+    float getSampleForChannel (int bufferIndex, ChannelMode mode) const;
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SignalScopeAudioProcessor)

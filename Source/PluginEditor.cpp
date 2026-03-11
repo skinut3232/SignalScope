@@ -3,14 +3,10 @@
 
     Draws a real-time waveform from the audio circular buffer.
 
-    How the drawing works:
-    1. Timer fires at ~60fps → calls repaint()
-    2. paint() converts timeScaleMs → sample count using the sample rate
-    3. Grabs that many samples from the processor's circular buffer
-    4. Maps samples to pixels using linear interpolation
-    5. Connects all points with a polyline (juce::Path)
-
-    Phase 3 adds grid/axis labels and a time scale slider.
+    Phase 3 complete:
+    - Time scale slider with grid/axis labels
+    - Channel select combo box (L / R / Mid / Side / Sum)
+    - Trigger detection locks waveform to selected channel
 */
 
 #include "PluginProcessor.h"
@@ -18,23 +14,14 @@
 #include <cmath>
 
 // ── Helper: pick a "nice" step size for grid divisions ─────────────────
-//
-// Given a rough step size, round it to the nearest "nice" number from
-// the sequence: ...0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50...
-//
-// This is the standard algorithm used by graphing libraries to choose
-// axis tick spacing. It ensures grid lines land on round numbers like
-// "5 ms" or "20 ms" rather than awkward values like "7.3 ms".
 static float niceStep (float roughStep)
 {
     if (roughStep <= 0.0f)
         return 1.0f;
 
-    // Find the order of magnitude (power of 10)
     float exponent = std::floor (std::log10 (roughStep));
     float fraction = roughStep / std::pow (10.0f, exponent);
 
-    // Snap to the nearest value in the 1-2-5 sequence
     float niceFraction;
     if (fraction < 1.5f)
         niceFraction = 1.0f;
@@ -80,6 +67,37 @@ SignalScopeAudioProcessorEditor::SignalScopeAudioProcessorEditor (SignalScopeAud
     timeScaleLabel.setJustificationType (juce::Justification::centredRight);
     addAndMakeVisible (timeScaleLabel);
 
+    // ── Channel Select ─────────────────────────────────────────────────
+    // ComboBox item IDs start at 1 (JUCE convention — 0 means "no selection").
+    // The order matches the ChannelMode enum.
+    channelSelect.addItem ("L",    1);
+    channelSelect.addItem ("R",    2);
+    channelSelect.addItem ("Mid",  3);
+    channelSelect.addItem ("Side", 4);
+    channelSelect.addItem ("Sum",  5);
+    channelSelect.setSelectedId (1);  // Default: Left channel
+
+    channelSelect.onChange = [this]()
+    {
+        // Map combo box selection (1-based) to ChannelMode enum (0-based)
+        const int selected = channelSelect.getSelectedId() - 1;
+        processorRef.channelMode.store (
+            static_cast<ChannelMode> (selected),
+            std::memory_order_relaxed);
+    };
+
+    channelSelect.setColour (juce::ComboBox::backgroundColourId, juce::Colour (25, 25, 30));
+    channelSelect.setColour (juce::ComboBox::textColourId, juce::Colour (150, 150, 155));
+    channelSelect.setColour (juce::ComboBox::outlineColourId, juce::Colour (40, 40, 45));
+    channelSelect.setColour (juce::ComboBox::arrowColourId, juce::Colour (0, 220, 90));
+
+    addAndMakeVisible (channelSelect);
+
+    channelLabel.setText ("Ch", juce::dontSendNotification);
+    channelLabel.setColour (juce::Label::textColourId, juce::Colour (120, 120, 125));
+    channelLabel.setJustificationType (juce::Justification::centredRight);
+    addAndMakeVisible (channelLabel);
+
     startTimerHz (60);
 }
 
@@ -117,24 +135,14 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
     int numSamples = static_cast<int> (timeMs * sampleRate / 1000.0);
     numSamples = juce::jlimit (2, SignalScopeAudioProcessor::kCircularBufferSize / 2, numSamples);
 
-    // ── Grid (drawn BEHIND the waveform) ───────────────────────────────
-    //
-    // The grid provides visual reference for reading the signal.
-    // Horizontal lines = amplitude divisions (how loud)
-    // Vertical lines = time divisions (when)
-    //
-    // We draw it before the waveform so the trace sits on top.
-
+    // ── Grid ───────────────────────────────────────────────────────────
     const juce::Colour majorGridColour (35, 35, 40);
     const juce::Colour minorGridColour (25, 25, 28);
     const juce::Colour labelColour (70, 70, 75);
-    const float labelFontSize = 11.0f;
 
-    g.setFont (labelFontSize);
+    g.setFont (11.0f);
 
-    // ── Horizontal grid lines (amplitude) ──────────────────────────────
-    // Major lines at 0.0, ±0.5, ±1.0
-    // Minor lines at ±0.25, ±0.75
+    // Horizontal grid lines (amplitude)
     {
         const float amplitudes[] = { -1.0f, -0.75f, -0.5f, -0.25f, 0.0f,
                                       0.25f, 0.5f, 0.75f, 1.0f };
@@ -149,12 +157,10 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
             g.drawHorizontalLine (static_cast<int> (y),
                                   displayBounds.getX(), displayBounds.getRight());
 
-            // Labels on major lines only, on the left edge
             if (isMajor)
             {
                 g.setColour (labelColour);
 
-                // Format: show "0" for zero, otherwise show with one decimal
                 juce::String label;
                 if (amp == 0.0f)
                     label = "0";
@@ -163,7 +169,6 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
                 else
                     label = juce::String (amp, 1);
 
-                // Position the label just to the right of the left edge
                 g.drawText (label,
                             static_cast<int> (displayBounds.getX() + 2),
                             static_cast<int> (y - 7),
@@ -173,27 +178,21 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
         }
     }
 
-    // ── Vertical grid lines (time) ─────────────────────────────────────
-    // Use the "nice step" algorithm to pick round-number intervals.
-    // Aim for roughly 5-8 divisions across the display.
+    // Vertical grid lines (time)
     {
         const float roughStep = timeMs / 6.0f;
         const float step = niceStep (roughStep);
 
-        // Draw lines at each step interval: step, 2*step, 3*step, ...
         for (float t = step; t < timeMs; t += step)
         {
-            // Map time position to pixel X
             const float x = displayBounds.getX() + (t / timeMs) * displayWidth;
 
             g.setColour (majorGridColour);
             g.drawVerticalLine (static_cast<int> (x),
                                 displayBounds.getY(), displayBounds.getBottom());
 
-            // Time label at the bottom of the grid
             g.setColour (labelColour);
 
-            // Format: show as integer if whole number, otherwise 1 decimal
             juce::String label;
             if (step >= 1.0f && std::fmod (t, 1.0f) < 0.01f)
                 label = juce::String (static_cast<int> (t)) + "ms";
@@ -209,7 +208,10 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
     }
 
     // ── Grab audio samples and draw waveform ───────────────────────────
-    processorRef.getDisplaySamples (displaySamplesL, displaySamplesR, numSamples);
+    // getDisplayMixed() applies the channel mode (L/R/Mid/Side/Sum) and
+    // returns a single mixed buffer, with trigger detection applied to
+    // the selected channel.
+    processorRef.getDisplayMixed (displaySamples, numSamples);
 
     juce::Path waveformPath;
     const int pixelCount = static_cast<int> (displayWidth);
@@ -223,7 +225,7 @@ void SignalScopeAudioProcessorEditor::paint (juce::Graphics& g)
         const int   idx1 = juce::jmin (idx0 + 1, numSamples - 1);
         const float frac = samplePos - static_cast<float> (idx0);
 
-        const float sampleValue = displaySamplesL[idx0] + frac * (displaySamplesL[idx1] - displaySamplesL[idx0]);
+        const float sampleValue = displaySamples[idx0] + frac * (displaySamples[idx1] - displaySamples[idx0]);
 
         const float x = displayBounds.getX() + static_cast<float> (px);
         const float y = centreY - sampleValue * (displayHeight * 0.5f);
@@ -251,7 +253,17 @@ void SignalScopeAudioProcessorEditor::resized()
                            .removeFromBottom (controlStripHeight)
                            .reduced (10, 5);
 
-    auto labelArea = controlArea.removeFromLeft (40);
-    timeScaleLabel.setBounds (labelArea);
+    // Channel select on the left
+    auto chLabelArea = controlArea.removeFromLeft (25);
+    channelLabel.setBounds (chLabelArea);
+    auto chSelectArea = controlArea.removeFromLeft (70);
+    channelSelect.setBounds (chSelectArea);
+
+    // Small gap
+    controlArea.removeFromLeft (15);
+
+    // Time slider fills the rest
+    auto timeLabelArea = controlArea.removeFromLeft (40);
+    timeScaleLabel.setBounds (timeLabelArea);
     timeScaleSlider.setBounds (controlArea);
 }

@@ -147,6 +147,34 @@ void SignalScopeAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
     writePosition.store (pos, std::memory_order_relaxed);
 }
 
+// ── Helper: get a sample value for a given channel mode ────────────────
+//
+// This applies the channel mixing math at a single buffer index:
+//   Left  = L
+//   Right = R
+//   Mid   = (L + R) / 2  — the "center" of the stereo image
+//   Side  = (L - R) / 2  — the "width" of the stereo image
+//   Sum   = (L + R) / 2  — same as Mid (common alias)
+//
+// Mid/Side encoding is how mastering engineers analyze stereo content.
+// Mid contains everything panned center (vocals, kick, bass).
+// Side contains everything panned wide (reverb, stereo effects).
+float SignalScopeAudioProcessor::getSampleForChannel (int bufferIndex, ChannelMode mode) const
+{
+    const float l = circularBufferL[bufferIndex];
+    const float r = circularBufferR[bufferIndex];
+
+    switch (mode)
+    {
+        case ChannelMode::Left:   return l;
+        case ChannelMode::Right:  return r;
+        case ChannelMode::Mid:    return (l + r) * 0.5f;
+        case ChannelMode::Side:   return (l - r) * 0.5f;
+        case ChannelMode::Sum:    return (l + r) * 0.5f;
+        default:                  return l;
+    }
+}
+
 void SignalScopeAudioProcessor::getDisplaySamples (std::vector<float>& destL,
                                                     std::vector<float>& destR,
                                                     int numSamples) const
@@ -154,26 +182,9 @@ void SignalScopeAudioProcessor::getDisplaySamples (std::vector<float>& destL,
     /*
         Called by the UI thread to grab samples for display.
 
-        Phase 3 adds TRIGGER DETECTION:
-
-        Without a trigger, the display starts at "the most recent N samples",
-        which means the waveform's phase position changes every frame → chaos.
-
-        With a trigger, we search backwards through recent audio history to
-        find a "trigger point" — a place where the signal crosses a threshold
-        in the chosen direction (rising or falling edge). We then start the
-        display from that trigger point, so the waveform appears phase-locked
-        and stable.
-
-        The search works like this (for rising edge, threshold = 0.0):
-          1. Start from the most recent data and look backwards
-          2. Find a sample pair where: previous < 0.0 AND current >= 0.0
-          3. That crossing point becomes the start of our display window
-          4. If no crossing is found, fall back to showing the most recent data
-
-        We search through a "search window" that's larger than the display
-        window. This gives us enough history to find a trigger point even
-        if the signal frequency is low.
+        Trigger detection searches backwards through recent audio for a
+        threshold crossing on the SELECTED channel (not always left).
+        This ensures the trigger locks to the signal you're actually viewing.
     */
 
     destL.resize (numSamples);
@@ -182,38 +193,23 @@ void SignalScopeAudioProcessor::getDisplaySamples (std::vector<float>& destL,
     const int pos = writePosition.load (std::memory_order_relaxed);
     const TriggerMode mode = triggerMode.load (std::memory_order_relaxed);
     const float threshold = triggerLevel.load (std::memory_order_relaxed);
+    const ChannelMode channel = channelMode.load (std::memory_order_relaxed);
 
-    // How far back to search for a trigger point. We search up to half the
-    // buffer, which gives plenty of room to find a crossing while still
-    // leaving enough samples ahead of the trigger to fill the display.
     const int searchSize = kCircularBufferSize / 2;
 
-    // Default: start reading from (pos - numSamples), i.e. most recent data.
-    // If we find a trigger, we'll override this.
     int triggerIndex = (pos - numSamples + kCircularBufferSize) % kCircularBufferSize;
 
     if (mode != TriggerMode::None)
     {
-        // Search backwards from the most recent data to find a trigger crossing.
-        // We start the search at a point that ensures we have enough samples
-        // AFTER the trigger to fill the display (numSamples worth).
-        //
-        // searchStart = the newest sample we'd consider as a trigger point
-        //             = pos - numSamples (so there are numSamples after it)
-        // searchEnd   = how far back we're willing to look
-        //             = searchStart - searchSize
-
-        bool found = false;
-
         for (int i = 0; i < searchSize; ++i)
         {
-            // Current sample index (working backwards from the newest valid trigger point)
             int idx = (pos - numSamples - i + kCircularBufferSize) % kCircularBufferSize;
-            // Previous sample (one step older)
             int prevIdx = (idx - 1 + kCircularBufferSize) % kCircularBufferSize;
 
-            float current = circularBufferL[idx];
-            float previous = circularBufferL[prevIdx];
+            // Use the selected channel for trigger detection so the
+            // trigger locks to the signal being displayed.
+            float current  = getSampleForChannel (idx, channel);
+            float previous = getSampleForChannel (prevIdx, channel);
 
             bool triggered = false;
 
@@ -225,23 +221,41 @@ void SignalScopeAudioProcessor::getDisplaySamples (std::vector<float>& destL,
             if (triggered)
             {
                 triggerIndex = idx;
-                found = true;
                 break;
             }
         }
-
-        // If no trigger found, fall through to the default (most recent samples).
-        // This happens during silence or when the signal doesn't cross the threshold.
-        (void) found;
     }
 
-    // Copy numSamples starting from the trigger point (or fallback position)
     int readPos = triggerIndex;
     for (int i = 0; i < numSamples; ++i)
     {
         destL[i] = circularBufferL[readPos];
         destR[i] = circularBufferR[readPos];
         readPos = (readPos + 1) % kCircularBufferSize;
+    }
+}
+
+void SignalScopeAudioProcessor::getDisplayMixed (std::vector<float>& dest,
+                                                  int numSamples) const
+{
+    // First grab L+R with trigger detection, then mix down to one channel.
+    std::vector<float> tempL, tempR;
+    getDisplaySamples (tempL, tempR, numSamples);
+
+    dest.resize (numSamples);
+    const ChannelMode mode = channelMode.load (std::memory_order_relaxed);
+
+    for (int i = 0; i < numSamples; ++i)
+    {
+        switch (mode)
+        {
+            case ChannelMode::Left:   dest[i] = tempL[i]; break;
+            case ChannelMode::Right:  dest[i] = tempR[i]; break;
+            case ChannelMode::Mid:    dest[i] = (tempL[i] + tempR[i]) * 0.5f; break;
+            case ChannelMode::Side:   dest[i] = (tempL[i] - tempR[i]) * 0.5f; break;
+            case ChannelMode::Sum:    dest[i] = (tempL[i] + tempR[i]) * 0.5f; break;
+            default:                  dest[i] = tempL[i]; break;
+        }
     }
 }
 
