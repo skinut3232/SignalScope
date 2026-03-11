@@ -7,10 +7,9 @@
     - The Processor runs on the audio thread (~86 calls/sec at 44.1kHz/512)
     - The Editor runs on the message thread (UI thread, ~60fps)
 
-    Phase 2 adds:
-    - A juce::Timer that fires ~60 times per second, calling repaint()
-    - paint() reads the latest audio samples and draws them as a polyline
-    - The waveform shows amplitude (Y axis) over time (X axis)
+    Phase 3 adds:
+    - Time scale slider to zoom in/out on the time axis
+    - Sample-to-pixel mapping with linear interpolation
 */
 
 #pragma once
@@ -30,16 +29,20 @@ public:
     void resized() override;
 
 private:
-    // Called by the Timer at ~60fps. Triggers a repaint of the waveform.
     void timerCallback() override;
 
     SignalScopeAudioProcessor& processorRef;
 
     // Local copy of audio samples for the UI to draw.
-    // We copy from the processor's circular buffer each frame so we have
-    // a stable snapshot that won't change mid-draw.
     std::vector<float> displaySamplesL;
     std::vector<float> displaySamplesR;
+
+    // ── Time Scale Control ─────────────────────────────────────────────
+    // A horizontal slider at the bottom of the window that controls how
+    // many milliseconds of audio are visible. Dragging right = zoom out
+    // (more time visible), dragging left = zoom in (less time visible).
+    juce::Slider timeScaleSlider;
+    juce::Label  timeScaleLabel;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SignalScopeAudioProcessorEditor)
 };

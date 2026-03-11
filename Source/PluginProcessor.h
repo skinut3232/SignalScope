@@ -90,6 +90,18 @@ public:
     // Which edge to trigger on (rising, falling, or none/free-running).
     std::atomic<TriggerMode> triggerMode { TriggerMode::Rising };
 
+    // ── Time Scale (Phase 3) ───────────────────────────────────────────
+
+    // How many milliseconds of audio to show on screen.
+    // At 20ms default: a 500Hz wave shows one full cycle, which is a good
+    // starting view. Range will be ~1ms (zoomed in) to ~100ms (zoomed out).
+    std::atomic<float> timeScaleMs { 20.0f };
+
+    // The DAW's sample rate, stored from prepareToPlay(). Needed to convert
+    // the time scale (milliseconds) into a sample count.
+    // Default 44100 is a safe fallback if prepareToPlay hasn't been called yet.
+    std::atomic<double> currentSampleRate { 44100.0 };
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SignalScopeAudioProcessor)
 };

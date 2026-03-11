@@ -56,10 +56,13 @@ juce::AudioProcessorEditor* SignalScopeAudioProcessor::createEditor()
 
 bool SignalScopeAudioProcessor::hasEditor() const { return true; }
 
-void SignalScopeAudioProcessor::prepareToPlay (double /*sampleRate*/, int /*samplesPerBlock*/)
+void SignalScopeAudioProcessor::prepareToPlay (double sampleRate, int /*samplesPerBlock*/)
 {
+    // Store the sample rate so the UI can convert milliseconds → samples.
+    // Common values: 44100, 48000, 88200, 96000 Hz.
+    currentSampleRate.store (sampleRate, std::memory_order_relaxed);
+
     // Reset the circular buffer state when playback starts.
-    // This clears any stale data from a previous play session.
     std::fill (circularBufferL.begin(), circularBufferL.end(), 0.0f);
     std::fill (circularBufferR.begin(), circularBufferR.end(), 0.0f);
     writePosition.store (0, std::memory_order_relaxed);
