@@ -131,6 +131,16 @@ public:
     // Returns the sample at bufferIndex mixed according to the channel mode.
     float getSampleForChannel (int bufferIndex, ChannelMode mode) const;
 
+    // ── Visual Settings (Phase 4) ──────────────────────────────────────
+
+    // Persistence: how long the afterglow lasts (0.0 = no persistence,
+    // 1.0 = infinite persistence / never fades). Controls the alpha of
+    // the fade overlay drawn each frame.
+    std::atomic<float> persistence { 0.6f };
+
+    // Color theme: 0 = green phosphor, 1 = amber, 2 = blue
+    std::atomic<int> colorTheme { 0 };
+
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (SignalScopeAudioProcessor)
 };
